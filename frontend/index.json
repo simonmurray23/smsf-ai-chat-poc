@@ -1,0 +1,38 @@
+{
+  "faq.what.is.smsf": {
+    "title": "What is an SMSF?",
+    "tags": ["basics", "definition", "overview", "superannuation"],
+    "followups": ["faq.smsf.purpose", "faq.smsf.differences"],
+    "key": "faq/faq_what_is_smsf.md"
+  },
+  "faq.smsf.purpose": {
+    "title": "What's an SMSF for?",
+    "tags": ["purpose", "retirement", "goals"],
+    "followups": ["faq.smsf.differences"],
+    "key": "faq/faq_smsf_purpose.md"
+  },
+  "faq.smsf.differences": {
+    "title": "How does an SMSF differ from other super funds?",
+    "tags": ["comparison", "apra", "control", "industry funds", "retail funds"],
+    "followups": ["faq.is.smsf.right"],
+    "key": "faq/faq_smsf_differences.md"
+  },
+  "faq.is.smsf.right": {
+    "title": "Is an SMSF right for me?",
+    "tags": ["suitability", "decision", "responsibilities", "costs"],
+    "followups": ["faq.smsf.setup"],
+    "key": "faq/faq_is_smsf_right.md"
+  },
+  "faq.smsf.setup": {
+    "title": "How can I set up an SMSF?",
+    "tags": ["setup", "requirements", "trust deed", "registration", "ato"],
+    "followups": [],
+    "key": "faq/faq_smsf_differences.md"
+  },
+  "faq.members.count": {
+    "title": "How many members can an SMSF have?",
+    "tags": ["members", "trustees", "limits", "structure"],
+    "followups": ["faq.what.is.smsf", "faq.smsf.setup"],
+    "key": "faq/faq_smsf_members.md"
+  }
+}

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMSF Edu Chat · Gov-by-Design Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .typing span {display:inline-block;animation:blink 1.2s infinite;}
+    .typing span:nth-child(2){animation-delay:.2s}
+    .typing span:nth-child(3){animation-delay:.4s}
+    @keyframes blink {0%, 80%{opacity:.2} 40%{opacity:1}}
+    .nice-scroll{scrollbar-width:thin;scrollbar-color:#94a3b8 transparent}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <header class="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="size-9 rounded-2xl bg-teal-600 text-white grid place-items-center font-bold">AI</div>
+        <h1 class="text-lg sm:text-xl font-semibold">SMSF Educational Chat</h1>
+      </div>
+      <div class="ms-auto flex items-center gap-2 text-xs">
+        <span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-1">Cost-safe</span>
+        <span class="inline-flex items-center gap-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200 px-2 py-1">ap-southeast-2</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 py-4 grid gap-4">
+    <!-- Governance banner -->
+    <div class="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm leading-tight">
+      <strong>Important:</strong> Educational information only — not financial advice. The assistant cites only approved snippets and deflects advice-seeking questions.
+    </div>
+
+    <!-- Settings card -->
+    <section class="rounded-2xl border border-slate-200 bg-white p-4 grid gap-4">
+      <div class="flex flex-wrap items-end gap-4">
+        <div class="grow">
+          <label class="block text-xs font-medium text-slate-500">API URL</label>
+          <input id="apiUrl" class="w-full mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/prompt" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500">Answer length</label>
+          <select id="maxTokens" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            <option value="128">Short (128 tokens)</option>
+            <option value="256" selected>Medium (256 tokens)</option>
+            <option value="512">Long (512 tokens)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500">Creativity</label>
+          <input id="temperature" type="range" min="0" max="1" step="0.1" value="0.3" class="w-40" />
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="showCitations" type="checkbox" class="size-4" checked />
+          <label for="showCitations" class="text-sm">Show citations</label>
+        </div>
+        <button id="clearBtn" class="ms-auto rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Clear chat</button>
+      </div>
+      <div class="text-xs text-slate-500">Optional auth: paste an <code>idToken</code> below if you protect your API with Cognito (the app will send it as <code>Authorization: Bearer &lt;token&gt;</code>).</div>
+      <input id="idToken" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" placeholder="Paste Cognito ID token (optional)" />
+    </section>
+
+    <!-- Quick Questions / Suggestions -->
+    <section class="rounded-2xl border border-slate-200 bg-white p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-medium text-slate-700">Quick questions</h2>
+        <button id="refreshSuggestions" class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">Refresh</button>
+      </div>
+      <div id="suggestions" class="flex flex-wrap gap-2">
+        <!-- default seed buttons (work even before first request) -->
+        <button class="px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50" data-faq="faq.what.is.smsf">What is an SMSF?</button>
+        <button class="px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50" data-faq="faq.smsf.setup">How can I set up an SMSF?</button>
+        <button class="px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50" data-faq="faq.is.smsf.right">Is an SMSF right for me?</button>
+      </div>
+    </section>
+
+    <!-- Chat panel -->
+    <section class="rounded-2xl border border-slate-200 bg-white h-[65vh] grid grid-rows-[1fr_auto]">
+      <!-- Messages -->
+      <div id="messages" class="p-4 nice-scroll overflow-y-auto space-y-4">
+        <div class="flex items-start gap-3">
+          <div class="shrink-0 size-8 rounded-full bg-teal-600 text-white grid place-items-center text-xs">AI</div>
+          <div class="bg-slate-100 rounded-2xl px-4 py-3 text-sm max-w-[80%]">
+            Hi! Ask me about SMSF rules and concepts. I’ll answer using your approved snippets, and I’ll avoid giving personal financial advice.
+          </div>
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <form id="composer" class="border-t border-slate-200 p-3 flex items-end gap-2">
+        <textarea id="prompt" rows="2" class="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm resize-none" placeholder="Type your question (e.g., ‘What is the preservation age?’)"></textarea>
+        <button id="sendBtn" class="rounded-xl bg-teal-600 text-white px-4 py-2 text-sm hover:bg-teal-700">Send</button>
+      </form>
+    </section>
+
+    <!-- Error toast -->
+    <div id="toast" class="hidden fixed bottom-4 right-4 max-w-sm rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 shadow">Error goes here</div>
+  </main>
+
+  <script>
+    const els = {
+      apiUrl: document.getElementById('apiUrl'),
+      maxTokens: document.getElementById('maxTokens'),
+      temperature: document.getElementById('temperature'),
+      showCitations: document.getElementById('showCitations'),
+      idToken: document.getElementById('idToken'),
+      messages: document.getElementById('messages'),
+      composer: document.getElementById('composer'),
+      prompt: document.getElementById('prompt'),
+      sendBtn: document.getElementById('sendBtn'),
+      clearBtn: document.getElementById('clearBtn'),
+      toast: document.getElementById('toast'),
+      suggestions: document.getElementById('suggestions'),
+      refreshSuggestions: document.getElementById('refreshSuggestions'),
+    };
+
+    // Persist API URL between reloads
+    els.apiUrl.value = localStorage.getItem('apiUrl') || '';
+    els.apiUrl.addEventListener('input', () => localStorage.setItem('apiUrl', els.apiUrl.value));
+
+    function addMsg(role, html) {
+      const row = document.createElement('div');
+      row.className = 'flex items-start gap-3';
+      const avatar = `<div class="shrink-0 size-8 rounded-full ${role==='user' ? 'bg-slate-800' : 'bg-teal-600'} text-white grid place-items-center text-xs">${role==='user' ? 'U' : 'AI'}</div>`;
+      const bubble = `<div class="bg-${role==='user' ? 'sky' : 'slate'}-100 rounded-2xl px-4 py-3 text-sm max-w-[80%]">${html}</div>`;
+      row.innerHTML = avatar + bubble;
+      els.messages.appendChild(row);
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+
+    let typingEl = null;
+    function showTyping(){
+      typingEl = document.createElement('div');
+      typingEl.className = 'flex items-start gap-3';
+      typingEl.innerHTML = `
+        <div class="shrink-0 size-8 rounded-full bg-teal-600 text-white grid place-items-center text-xs">AI</div>
+        <div class="bg-slate-100 rounded-2xl px-4 py-3 text-sm max-w-[80%] typing"><span>●</span><span>●</span><span>●</span></div>`;
+      els.messages.appendChild(typingEl);
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+    function hideTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
+
+    function showToast(msg){
+      els.toast.textContent = msg;
+      els.toast.classList.remove('hidden');
+      setTimeout(()=> els.toast.classList.add('hidden'), 4500);
+    }
+
+    function escapeHtml(s){ return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    function renderCitations(cites){
+      if(!cites || !Array.isArray(cites) || !els.showCitations.checked) return '';
+      const items = cites.map((c,i)=>{
+        if (c && typeof c === 'object') {
+          const title = escapeHtml(c.title || c.id || `Source ${i+1}`);
+          const key = escapeHtml(c.key || '');
+          return `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${title}${key ? ` <span class="text-slate-400">(${key})</span>`:''}</li>`;
+        }
+        return `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${escapeHtml(String(c))}</li>`;
+      }).join('');
+      return `<div class="mt-2 text-xs text-slate-600"><div class="font-medium">Sources</div><ol class="list-decimal ms-4">${items}</ol></div>`;
+    }
+
+    function renderSuggestions(sugs){
+      if(!Array.isArray(sugs) || sugs.length === 0) return;
+      els.suggestions.innerHTML = '';
+      sugs.forEach(s => {
+        const btn = document.createElement('button');
+        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+        btn.dataset.faq = s.id;
+        btn.textContent = s.title || s.id;
+        els.suggestions.appendChild(btn);
+      });
+      // rebind handlers
+      bindSuggestionButtons();
+    }
+
+    function bindSuggestionButtons(){
+      els.suggestions.querySelectorAll('button[data-faq]').forEach(btn => {
+        btn.onclick = () => askFaq(btn.dataset.faq, btn.textContent.trim());
+      });
+    }
+    bindSuggestionButtons(); // initial static buttons
+
+    async function httpPost(payload){
+      const url = els.apiUrl.value.trim();
+      if(!url){ showToast('Please set the API URL first.'); throw new Error('No API URL'); }
+      const headers = { 'Content-Type': 'application/json' };
+      const token = els.idToken.value.trim();
+      if(token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+      const text = await res.text();
+      let data = text;
+      try { data = JSON.parse(text); } catch {}
+      return data;
+    }
+
+    async function askFaq(faqId, promptText=""){
+      addMsg('user', escapeHtml(promptText || '(selected question)'));
+      showTyping();
+      try {
+        const data = await httpPost({ faq_id: faqId, ...(promptText ? { prompt: promptText } : {}) });
+        hideTyping();
+        const answer = data.text || data.answer || JSON.stringify(data);
+        addMsg('assistant', `${escapeHtml(answer)}${renderCitations(data.citations)}`);
+        renderSuggestions(data.suggestions);
+      } catch (err) {
+        hideTyping();
+        console.error(err);
+        showToast('Request failed. Check CORS, API URL, and network.');
+      }
+    }
+
+    async function sendPrompt(text){
+      showTyping();
+      try {
+        const data = await httpPost({
+          prompt: text,
+          // Optional knobs if you decide to read them in Lambda later:
+          max_tokens: parseInt(els.maxTokens.value,10),
+          temperature: parseFloat(els.temperature.value)
+        });
+        hideTyping();
+        const answer = data.text || data.answer || JSON.stringify(data);
+        addMsg('assistant', `${escapeHtml(answer)}${renderCitations(data.citations)}`);
+        renderSuggestions(data.suggestions);
+      } catch (err){
+        hideTyping();
+        console.error(err);
+        showToast('Request failed. Check CORS, API URL, and network.');
+      }
+    }
+
+    // Composer events
+    els.composer.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const text = els.prompt.value.trim();
+      if(!text) return;
+      addMsg('user', escapeHtml(text));
+      els.prompt.value = '';
+      sendPrompt(text);
+    });
+
+    els.clearBtn.addEventListener('click', ()=>{
+      els.messages.innerHTML = '';
+      addMsg('assistant', 'Chat cleared. Ask me anything about SMSFs (educational only).');
+    });
+
+    // Pull fresh suggestions (from DEBUG=probe or any answer payload)
+    els.refreshSuggestions.addEventListener('click', async ()=>{
+      try {
+        const data = await httpPost({ prompt: '' }); // benign; backend will reply with suggestions anyway
+        renderSuggestions(data.suggestions);
+      } catch (e) {
+        showToast('Could not refresh suggestions.');
+      }
+    });
+  </script>
+</body>
+</html>

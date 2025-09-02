@@ -1,0 +1,37 @@
+[
+  {
+    "id": "s1",
+    "title": "SMSF Fundamentals: What is an SMSF?",
+    "topic": "fundamentals",
+    "url": "https://example.org/fundamentals",
+    "content": "A self-managed super fund (SMSF) is a private superannuation fund that you manage yourself as a trustee. Trustees are responsible for complying with super and tax laws. An SMSF can have up to 6 members, and decisions must be made for the sole purpose of providing retirement benefits."
+  },
+  {
+    "id": "s2",
+    "title": "Trustee Duties and Responsibilities",
+    "topic": "trustee",
+    "url": "https://example.org/trustee-responsibilities",
+    "content": "Trustees must formulate and regularly review an investment strategy, keep records, arrange audits, and ensure the fund complies with the sole purpose test. They must consider diversification, liquidity, and the risk/return objectives appropriate to members."
+  },
+  {
+    "id": "s3",
+    "title": "Costs and Ongoing Obligations",
+    "topic": "costs",
+    "url": "https://example.org/costs",
+    "content": "Running an SMSF involves costs (e.g., administration, audit, investment, and potential professional advice fees), plus time and effort. Trustees are responsible for annual returns and audits, maintaining records, and staying informed about regulatory changes."
+  },
+  {
+    "id": "s4",
+    "title": "Setting Up an SMSF: Key Steps",
+    "topic": "setup",
+    "url": "https://example.org/setup",
+    "content": "Typical steps include deciding on individual or corporate trustee structure, creating a trust deed, appointing trustees, applying for an ABN/TFN, opening a bank account, and rolling over super (if appropriate). Ensure decisions are made within the super and tax law framework."
+  },
+  {
+    "id": "s5",
+    "title": "Investment Strategy Basics",
+    "topic": "investment-strategy",
+    "url": "https://example.org/investment-strategy",
+    "content": "An SMSF investment strategy should consider the risk/return objectives, diversification, liquidity, and the ability to pay benefits. It should be documented and reviewed regularly, and any insurance needs for members should be considered."
+  }
+]

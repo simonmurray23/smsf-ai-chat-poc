@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMSF Edu Chat · Gov-by-Design Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* typing dots */
+    .typing span {display:inline-block;animation:blink 1.2s infinite;} 
+    .typing span:nth-child(2){animation-delay:.2s} 
+    .typing span:nth-child(3){animation-delay:.4s}
+    @keyframes blink {0%, 80%{opacity:.2} 40%{opacity:1}}
+    /* scrollbars a touch nicer */
+    .nice-scroll{scrollbar-width:thin;scrollbar-color:#94a3b8 transparent}
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <header class="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="size-9 rounded-2xl bg-teal-600 text-white grid place-items-center font-bold">AI</div>
+        <h1 class="text-lg sm:text-xl font-semibold">SMSF Educational Chat</h1>
+      </div>
+      <div class="ms-auto flex items-center gap-2 text-xs">
+        <span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-1">Cost‑safe</span>
+        <span class="inline-flex items-center gap-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200 px-2 py-1">ap-southeast-2</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 py-4 grid gap-4">
+    <!-- Governance banner -->
+    <div class="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm leading-tight">
+      <strong>Important:</strong> Educational information only — not financial advice. The assistant cites only approved snippets and deflects advice-seeking questions.
+    </div>
+
+    <!-- Settings card -->
+    <section class="rounded-2xl border border-slate-200 bg-white p-4 grid gap-4">
+      <div class="flex flex-wrap items-end gap-4">
+        <div class="grow">
+          <label class="block text-xs font-medium text-slate-500">API URL</label>
+          <input id="apiUrl" class="w-full mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/prompt" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500">Answer length</label>
+          <select id="maxTokens" class="mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            <option value="128">Short (128 tokens)</option>
+            <option value="256" selected>Medium (256 tokens)</option>
+            <option value="512">Long (512 tokens)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500">Creativity</label>
+          <input id="temperature" type="range" min="0" max="1" step="0.1" value="0.3" class="w-40" />
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="showCitations" type="checkbox" class="size-4" checked />
+          <label for="showCitations" class="text-sm">Show citations</label>
+        </div>
+        <button id="clearBtn" class="ms-auto rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">Clear chat</button>
+      </div>
+      <div class="text-xs text-slate-500">Optional auth: paste an <code>idToken</code> below if you protect your API with Cognito (the app will send it as <code>Authorization: Bearer &lt;token&gt;</code>).</div>
+      <input id="idToken" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs" placeholder="Paste Cognito ID token (optional)" />
+    </section>
+
+    <!-- Chat panel -->
+    <section class="rounded-2xl border border-slate-200 bg-white h-[65vh] grid grid-rows-[1fr_auto]">
+      <!-- Messages -->
+      <div id="messages" class="p-4 nice-scroll overflow-y-auto space-y-4">
+        <div class="flex items-start gap-3">
+          <div class="shrink-0 size-8 rounded-full bg-teal-600 text-white grid place-items-center text-xs">AI</div>
+          <div class="bg-slate-100 rounded-2xl px-4 py-3 text-sm max-w-[80%]">
+            Hi! Ask me about SMSF rules and concepts. I’ll answer using your approved snippets, and I’ll avoid giving personal financial advice.
+          </div>
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <form id="composer" class="border-t border-slate-200 p-3 flex items-end gap-2">
+        <textarea id="prompt" rows="2" class="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm resize-none" placeholder="Type your question (e.g., ‘What is the preservation age?’)"></textarea>
+        <button id="sendBtn" class="rounded-xl bg-teal-600 text-white px-4 py-2 text-sm hover:bg-teal-700">Send</button>
+      </form>
+    </section>
+
+    <!-- Error toast -->
+    <div id="toast" class="hidden fixed bottom-4 right-4 max-w-sm rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 shadow">Error goes here</div>
+  </main>
+
+  <script>
+    const els = {
+      apiUrl: document.getElementById('apiUrl'),
+      maxTokens: document.getElementById('maxTokens'),
+      temperature: document.getElementById('temperature'),
+      showCitations: document.getElementById('showCitations'),
+      idToken: document.getElementById('idToken'),
+      messages: document.getElementById('messages'),
+      composer: document.getElementById('composer'),
+      prompt: document.getElementById('prompt'),
+      sendBtn: document.getElementById('sendBtn'),
+      clearBtn: document.getElementById('clearBtn'),
+      toast: document.getElementById('toast'),
+    };
+
+    // Persist API URL between reloads
+    els.apiUrl.value = localStorage.getItem('apiUrl') || '';
+    els.apiUrl.addEventListener('input', () => localStorage.setItem('apiUrl', els.apiUrl.value));
+
+    function addMsg(role, html) {
+      const row = document.createElement('div');
+      row.className = 'flex items-start gap-3';
+      const avatar = `<div class="shrink-0 size-8 rounded-full ${role==='user' ? 'bg-slate-800' : 'bg-teal-600'} text-white grid place-items-center text-xs">${role==='user' ? 'U' : 'AI'}</div>`;
+      const bubble = `<div class="bg-${role==='user' ? 'sky' : 'slate'}-100 rounded-2xl px-4 py-3 text-sm max-w-[80%]">${html}</div>`;
+      row.innerHTML = (role==='user') ? avatar + bubble : avatar + bubble;
+      els.messages.appendChild(row);
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+
+    let typingEl = null;
+    function showTyping(){
+      typingEl = document.createElement('div');
+      typingEl.className = 'flex items-start gap-3';
+      typingEl.innerHTML = `
+        <div class="shrink-0 size-8 rounded-full bg-teal-600 text-white grid place-items-center text-xs">AI</div>
+        <div class="bg-slate-100 rounded-2xl px-4 py-3 text-sm max-w-[80%] typing"><span>●</span><span>●</span><span>●</span></div>`;
+      els.messages.appendChild(typingEl);
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+    function hideTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
+
+    function showToast(msg){
+      els.toast.textContent = msg;
+      els.toast.classList.remove('hidden');
+      setTimeout(()=> els.toast.classList.add('hidden'), 4500);
+    }
+
+    function escapeHtml(s){
+      return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+
+    function renderCitations(cites){
+      if(!cites || !Array.isArray(cites) || !els.showCitations.checked) return '';
+      const items = cites.map((c,i)=>`<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${escapeHtml(c)}</li>`).join('');
+      return `<div class="mt-2 text-xs text-slate-600"><div class="font-medium">Sources</div><ol class="list-decimal ms-4">${items}</ol></div>`;
+    }
+
+    async function sendPrompt(text){
+      const url = els.apiUrl.value.trim();
+      if(!url){ showToast('Please set the API URL first.'); return; }
+      const payload = {
+        message: text,
+        // Optional knobs if your Lambda reads them:
+        max_tokens: parseInt(els.maxTokens.value,10),
+        temperature: parseFloat(els.temperature.value)
+      };
+      const headers = { 'Content-Type': 'application/json' };
+      const token = els.idToken.value.trim();
+      if(token) headers['Authorization'] = `Bearer ${token}`;
+
+      showTyping();
+      try {
+        const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+        const ct = resp.headers.get('content-type') || '';
+        let body = await resp.text();
+        let data = body;
+        try { data = JSON.parse(body); } catch {}
+
+        // Flexible parsing for different Lambda proxy return shapes
+        let answer = '';
+        let citations = [];
+        if(typeof data === 'string') {
+          answer = data;
+        } else if (data.answer) {
+          answer = data.answer;
+          citations = data.citations || [];
+        } else if (data.body) {
+          try {
+            const inner = JSON.parse(data.body);
+            answer = inner.answer || inner.message || data.body;
+            citations = inner.citations || [];
+          } catch { answer = data.body; }
+        } else {
+          answer = JSON.stringify(data);
+        }
+
+        hideTyping();
+        addMsg('assistant', `${escapeHtml(answer)}${renderCitations(citations)}`);
+      } catch (err){
+        hideTyping();
+        console.error(err);
+        showToast('Request failed. Check CORS, API URL, and network.');
+      }
+    }
+
+    els.composer.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const text = els.prompt.value.trim();
+      if(!text) return;
+      addMsg('user', escapeHtml(text));
+      els.prompt.value = '';
+      sendPrompt(text);
+    });
+
+    els.clearBtn.addEventListener('click', ()=>{
+      els.messages.innerHTML = '';
+      addMsg('assistant', 'Chat cleared. Ask me anything about SMSFs (educational only).');
+    });
+  </script>
+</body>
+</html>

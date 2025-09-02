@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SMSF Chatbot Lambda Function
+
+Parameters:
+  S3Bucket:
+    Type: String
+    Description: S3 bucket for FAQ storage
+  ModelId:
+    Type: String
+    Default: amazon.titan-text-lite-v1
+    Description: Bedrock model ID
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    Environment:
+      Variables:
+        S3_BUCKET: !Ref S3Bucket
+        MODEL_ID: !Ref ModelId
+        AWS_REGION: !Ref AWS::Region
+
+Resources:
+  SMSFChatbotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: app.lambda_handler
+      Policies:
+        - S3ReadOnlyAccess
+        - Statement:
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${ModelId}'
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /chat
+            Method: post
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/chat"

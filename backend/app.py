@@ -59,6 +59,29 @@ ADVICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- New: matching & prompts config ---
+MAX_SNIPPETS = _int_env("MAX_SNIPPETS", 3)
+
+# Prompt templates
+CORPUS_INSTRUCTIONS = (
+    "You are an educational assistant for Australian SMSFs.\n"
+    "You will be given APPROVED SOURCE EXCERPTS and a USER QUESTION.\n"
+    "Use ONLY the excerpts as factual ground truth; if something is not covered, say so.\n"
+    "Avoid financial advice or recommendations. Do not include citations inline.\n"
+    "Write concise markdown."
+)
+
+FALLBACK_INSTRUCTIONS = (
+    "You are an educational assistant for Australian SMSFs.\n"
+    "No approved excerpts are available.\n"
+    "Provide neutral, general educational information only. Avoid financial advice.\n"
+    "Do not include a disclaimer (the system appends it). No citations. Concise markdown."
+)
+
+DEFLECTION_LEAD = (
+    "I can’t provide personal financial advice. Here’s general information to help you understand the topic."
+)
+
 # ---------- AWS Clients ----------
 S3 = boto3.client("s3")
 BR = boto3.client("bedrock-runtime", region_name=AWS_REGION)
@@ -112,7 +135,7 @@ def _extract_prompt(obj: Any) -> str:
     Try hard to find a user prompt in flexible shapes:
     - {"prompt": "..."} (preferred)
     - {"message"|"input"|"text"|"q"|"query": "..."}
-    - {"data":{"prompt":"..."}}, {"body":{"prompt":"..."}}, {"detail":{"payload":{"prompt":"..."}}}, etc.
+    - nested dicts like {"data":{"prompt":"..."}}, etc.
     - plain string body
     """
     if isinstance(obj, str):
@@ -131,7 +154,7 @@ def _extract_prompt(obj: Any) -> str:
                     return p
     return ""
 
-# ---------- Body Parsing (v1/v2 + base64 + JSON + form + double-encoded) ----------
+# ---------- Body Parsing ----------
 def parse_event_body(event: Dict[str, Any]) -> Dict[str, Any]:
     import base64
     headers = { (k or ""): (v or "") for k, v in (event.get("headers") or {}).items() }
@@ -174,17 +197,10 @@ def s3_read_text(key: str) -> str:
     except UnicodeDecodeError:
         return data.decode("latin-1", errors="replace")
 
-# ---------- Front-matter Parsing (robust, list-aware) ----------
+# ---------- Front-matter Parsing ----------
 def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
     """
     Forgiving YAML-like front matter parser.
-    - Supports keys with scalar values: key: value
-    - Supports empty list headers followed by dash items:
-        key:
-          - a
-          - b
-    - Ignores comments/blank lines.
-    - Returns (meta_dict, body_without_front_matter)
     """
     if not md_text:
         return {}, ""
@@ -200,7 +216,6 @@ def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
             end_idx = i
             break
     if end_idx is None:
-        # No closing delimiter; treat as no front matter
         return {}, md_text
 
     fm_lines = lines[1:end_idx]
@@ -214,7 +229,6 @@ def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
         if not line or line.lstrip().startswith("#"):
             continue
 
-        # key: value  (value may be empty)
         m = re.match(r'^\s*([A-Za-z0-9_.-]+)\s*:\s*(.*)$', line)
         if m:
             key = m.group(1).strip()
@@ -222,10 +236,8 @@ def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
             current_key = key
 
             if val == "":
-                # Start of a list (expect following "- item" lines)
                 meta[key] = []
             else:
-                # Scalar normalization
                 if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
                     val = val[1:-1]
                 low = val.lower()
@@ -234,7 +246,6 @@ def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
                 elif low == "false":
                     meta[key] = False
                 elif val.startswith("[") and val.endswith("]"):
-                    # Try JSON list inline: key: ["a","b"]
                     try:
                         meta[key] = json.loads(val)
                     except Exception:
@@ -243,16 +254,13 @@ def parse_front_matter(md_text: str) -> Tuple[Dict[str, Any], str]:
                     meta[key] = val
             continue
 
-        # - list item (under the most recent key)
         li = re.match(r'^\s*-\s*(.+)$', line)
         if li and current_key:
             if not isinstance(meta.get(current_key), list):
-                # Convert any prior scalar to a list (preserve if non-empty)
                 prev = meta.get(current_key)
                 meta[current_key] = [] if prev in (None, "",) else [str(prev)]
             meta[current_key].append(li.group(1).strip())
 
-    # Normalize common list-y fields
     for f in ("tags", "source_urls", "followups"):
         if f not in meta:
             meta[f] = []
@@ -335,6 +343,33 @@ def get_faq_doc(faq_id: str) -> Tuple[str, str, Dict[str, str]]:
     citation = {"id": str(faq_id), "title": title, "key": key}
     return title, content, citation
 
+# ---------- New: matching utilities ----------
+def _score_match(question: str, title: str, tags: List[str]) -> int:
+    ql = (question or "").lower()
+    score = 0
+    if title and title.lower() in ql:
+        score += 5
+    for t in (tags or []):
+        if (t or "").lower() in ql:
+            score += 1
+    if title:
+        q_tokens = set(re.findall(r"[a-z0-9]+", ql))
+        t_tokens = set(re.findall(r"[a-z0-9]+", (title or "").lower()))
+        score += len(q_tokens & t_tokens)
+    return score
+
+def find_matches(question: str, index: Dict[str, Dict[str, Any]], max_snippets: int = MAX_SNIPPETS) -> List[Tuple[str, Dict[str, Any]]]:
+    scored: List[Tuple[int, str, Dict[str, Any]]] = []
+    for sid, meta in (index or {}).items():
+        sc = _score_match(question, meta.get("title", ""), meta.get("tags", []))
+        if sc > 0:
+            scored.append((sc, sid, meta))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [(sid, meta) for _, sid, meta in scored[:max_snippets]]
+
+def guess_path_from_id(snippet_id: str) -> str:
+    return f"{FAQ_PREFIX}{snippet_id}.md".replace(" ", "_")
+
 # ---------- Titan Helpers (schema-correct) ----------
 def titan_payload(input_text: str) -> Dict[str, Any]:
     return {
@@ -348,7 +383,6 @@ def titan_payload(input_text: str) -> Dict[str, Any]:
     }
 
 def call_titan(payload: Dict[str, Any]) -> str:
-    # Emit single-line payload (with input redacted for logs)
     redacted = {
         "inputText": "<redacted>",
         "textGenerationConfig": payload.get("textGenerationConfig", {}),
@@ -367,6 +401,38 @@ def call_titan(payload: Dict[str, Any]) -> str:
     if not results:
         raise RuntimeError("Empty Titan results")
     return (results[0].get("outputText") or "").strip()
+
+# ---------- New: prompt builders + response shaper ----------
+def build_corpus_prompt(question: str, excerpts: List[str]) -> str:
+    joined = "\n\n---\n\n".join(excerpts)
+    return (
+        f"{CORPUS_INSTRUCTIONS}\n\n"
+        f"USER QUESTION:\n{question}\n\n"
+        f"APPROVED SOURCE EXCERPTS:\n{joined}\n"
+    )
+
+def build_fallback_prompt(question: str) -> str:
+    return f"{FALLBACK_INSTRUCTIONS}\n\nUSER QUESTION:\n{question}\n"
+
+def apply_deflection_wrapping(text: str, add_neutral_preamble: bool = False, topic_title: Optional[str] = None) -> str:
+    pre = DEFLECTION_LEAD
+    if add_neutral_preamble and topic_title:
+        pre += f" Below is neutral, educational context about **{topic_title}**."
+    return f"{pre}\n\n{text}"
+
+def normalize_response(answer_md: str,
+                       citations: List[Dict[str, Any]],
+                       suggestions: List[Dict[str, str]],
+                       source: str) -> Dict[str, Any]:
+    with_disc = append_disclaimer(answer_md or "")
+    return {
+        "answer": with_disc,          # new
+        "text": with_disc,            # backward-compat for current UI
+        "citations": citations,
+        "suggestions": suggestions,
+        "source": source,
+        "disclaimer": DISCLAIMER,
+    }
 
 # ---------- Lambda Handler ----------
 def lambda_handler(event, context):
@@ -430,11 +496,13 @@ def lambda_handler(event, context):
                     pass
             return _err(400, "Missing 'prompt' or 'faq_id' in request body.", debug=dbg)
 
-        # Fast-path regex deflection to save model cost
-        if is_advice_seeking(user_q):
-            msg = ("I can’t provide financial, legal, or tax advice. "
-                   "Here’s general, educational information instead.")
-            return _ok(200, {"text": append_disclaimer(msg), "citations": [], "suggestions": top_suggestions(), "disclaimer": DISCLAIMER})
+        # Advice-seeking detection (used later)
+        advice_detected = is_advice_seeking(user_q)
+
+        # If clearly advice-seeking and no faq_id context, deflect early to save model cost
+        if advice_detected and not faq_id:
+            msg = apply_deflection_wrapping("Here’s a general overview.")
+            return _ok(200, normalize_response(msg, [], top_suggestions(), "titan_fallback"))
 
         # Suggestions (best-effort)
         try:
@@ -442,31 +510,87 @@ def lambda_handler(event, context):
         except Exception:
             suggestions = []
 
-        citations: List[Dict[str, str]] = []
+        citations: List[Dict[str, Any]] = []
         context_text = ""
+        source = "titan_fallback"
 
         if faq_id:
             try:
                 title, content, cite = get_faq_doc(faq_id)
-                context_text = f"FAQ: {title}\n\n{content}"
+                context_text = f"[{title}]\n\n{content}"
                 citations.append(cite)
-            except FileNotFoundError as e:
-                return _err(404, "S3 key not found", str(e), {"faq_id": faq_id})
+                meta = INDEX_CACHE.get(str(faq_id)) or {}
+                snippet_deflection_required = bool(meta.get("deflection_required"))
+                topic_title = meta.get("title") or title
+                source = "corpus"
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                    return _err(404, "S3 key not found", str(e), {"faq_id": faq_id})
+                return _err(500, "Failed to load FAQ", str(e))
             except KeyError:
                 return _err(404, "Unknown FAQ id", faq_id)
             except Exception as e:
                 return _err(500, "Failed to load FAQ", str(e))
-
-        # Compose prompt for Titan
-        preface = (
-            "You are an educational assistant for Australian SMSFs. "
-            "Answer concisely in plain English. Use provided FAQ context if available. "
-            "Do not provide personal financial, legal, or tax advice."
-        )
-        if context_text:
-            composed = f"{preface}\n\nUse this context:\n\n{context_text}\n\nUser: {user_q}\n\nAnswer:"
         else:
-            composed = f"{preface}\n\nUser: {user_q}\n\nAnswer based on general SMSF educational information."
+            # No explicit faq_id → try to match from index
+            snippet_deflection_required = False
+            topic_title = None
+            excerpts: List[str] = []
+            if not INDEX_LOADED:
+                load_index()
+            matches = find_matches(user_q, INDEX_CACHE)
+            if matches:
+                for sid, meta in matches:
+                    s3_key = meta.get("key") or meta.get("s3_key") or meta.get("path") or guess_path_from_id(sid)
+                    try:
+                        md = s3_read_text(s3_key)
+                        fm, body_md = parse_front_matter(md)
+                        title = fm.get("title") or meta.get("title") or sid
+                        excerpts.append(f"[{title}]\n\n{body_md.strip()}")
+                        citations.append({"id": str(sid), "title": title, "key": s3_key})
+                        fups = meta.get("followups") or fm.get("followups") or []
+                        if fups and isinstance(fups, list):
+                            for f_id in fups:
+                                f_meta = INDEX_CACHE.get(str(f_id), {})
+                                suggestions.append({"id": str(f_id), "title": f_meta.get("title", str(f_id))})
+                        if (meta.get("deflection_required") is True) or (fm.get("deflection_required") is True):
+                            snippet_deflection_required = True
+                            topic_title = topic_title or title
+                    except Exception:
+                        continue
+
+                if excerpts:
+                    # Build a corpus-constrained prompt
+                    composed = build_corpus_prompt(user_q, excerpts)
+                    payload = titan_payload(composed)
+                    try:
+                        model_out = call_titan(payload)
+                    except ClientError as e:
+                        return _err(502, "Bedrock invoke failed", str(e))
+                    except Exception as e:
+                        return _err(502, "Bedrock error", str(e))
+
+                    # Guardrails
+                    if advice_detected or snippet_deflection_required:
+                        model_out = apply_deflection_wrapping(
+                            model_out, add_neutral_preamble=True, topic_title=topic_title
+                        )
+                    return _ok(200, normalize_response(model_out, citations, suggestions, "corpus"))
+                # else: no readable excerpts → continue to fallback
+
+        # Compose prompt for Titan (faq_id path OR pure fallback)
+        if context_text:
+            # faq_id path with explicit context
+            preface = CORPUS_INSTRUCTIONS
+            composed = (
+                f"{preface}\n\nUSER QUESTION:\n{user_q}\n\n"
+                f"APPROVED SOURCE EXCERPTS:\n{context_text}\n"
+            )
+            source = "corpus"
+        else:
+            # fallback (no snippets)
+            composed = build_fallback_prompt(user_q)
+            source = "titan_fallback"
 
         payload = titan_payload(composed)
 
@@ -477,8 +601,12 @@ def lambda_handler(event, context):
         except Exception as e:
             return _err(502, "Bedrock error", str(e))
 
-        text = append_disclaimer(model_out or "")
-        return _ok(200, {"text": text, "citations": citations, "suggestions": suggestions, "disclaimer": DISCLAIMER})
+        # Guardrails for faq_id route as well
+        if advice_detected and source == "corpus":
+            topic_title = (citations[0]["title"] if citations else None)
+            model_out = apply_deflection_wrapping(model_out, add_neutral_preamble=True, topic_title=topic_title)
+
+        return _ok(200, normalize_response(model_out, citations, suggestions, source))
 
     except ClientError as e:
         logger.error("AWS ClientError: %s", e, exc_info=True)

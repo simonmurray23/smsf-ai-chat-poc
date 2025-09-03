@@ -1,10 +1,12 @@
-<!DOCTYPE html>
+<!DOCTYPE html> 
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SMSF Edu Chat · Gov-by-Design Demo</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Markdown renderer for renderResponse -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <style>
     .typing span {display:inline-block;animation:blink 1.2s infinite;}
     .typing span:nth-child(2){animation-delay:.2s}
@@ -38,7 +40,7 @@
       <div class="flex flex-wrap items-end gap-4">
         <div class="grow">
           <label class="block text-xs font-medium text-slate-500">API URL</label>
-          <input id="apiUrl" class="w-full mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/prompt" />
+          <input id="apiUrl" class="w-full mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="https://&lt;api-id&gt;.execute-api.ap-southeast-2.amazonaws.com/prod/prompt" />
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-500">Answer length</label>
@@ -128,6 +130,7 @@
       row.innerHTML = avatar + bubble;
       els.messages.appendChild(row);
       els.messages.scrollTop = els.messages.scrollHeight;
+      return row; // return row so we can append chips under it when needed
     }
 
     let typingEl = null;
@@ -197,19 +200,72 @@
       return data;
     }
 
+    // ---- NEW: renderResponse integrates your corpus/fallback UI rules ----
+    function renderResponse(payload){
+      // your updated signature
+      const { answer, citations, suggestions, disclaimer, source } = payload;
+
+      // main body (Markdown → HTML; falls back to escaped text if marked missing)
+      const html = (window.marked && typeof marked.parse === 'function')
+        ? marked.parse(answer || '')
+        : escapeHtml(answer || '').replace(/\n/g,'<br/>');
+
+      // append citations only for corpus answers and only if toggle is ON
+      const withCitations = (source === 'corpus')
+        ? `${html}${renderCitations(citations)}`
+        : html;
+
+      // add the assistant bubble
+      const row = addMsg('assistant', withCitations);
+
+      // follow-up chips (corpus only)
+      if (source === 'corpus' && Array.isArray(suggestions) && suggestions.length){
+        const chipsWrap = document.createElement('div');
+        chipsWrap.className = 'ms-11'; // indent to align under AI bubble (size-8 avatar + gap)
+        const chips = document.createElement('div');
+        chips.className = 'flex flex-wrap gap-2 mt-2';
+        suggestions.forEach(s => {
+          const btn = document.createElement('button');
+          btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+          btn.textContent = String(s);
+          btn.onclick = () => {
+            addMsg('user', escapeHtml(String(s)));
+            sendPrompt(String(s));
+          };
+          chips.appendChild(btn);
+        });
+        chipsWrap.appendChild(chips);
+        els.messages.appendChild(chipsWrap);
+        els.messages.scrollTop = els.messages.scrollHeight;
+      }
+
+      // Disclaimer: already appended inside `answer` by backend for fallback/deflection.
+      // (Intentionally no separate disclaimer UI here.)
+    }
+
     async function askFaq(faqId, promptText=""){
       addMsg('user', escapeHtml(promptText || '(selected question)'));
       showTyping();
       try {
         const data = await httpPost({ faq_id: faqId, ...(promptText ? { prompt: promptText } : {}) });
         hideTyping();
-        const answer = data.text || data.answer || JSON.stringify(data);
-        addMsg('assistant', `${escapeHtml(answer)}${renderCitations(data.citations)}`);
-        renderSuggestions(data.suggestions);
+        // unified rendering path
+        renderResponse(normalizePayload(data));
+        // keep the top suggestions panel behavior if your backend sends {suggestions:[{id,title},...]} for that area
+        if (Array.isArray(data.suggestions) && data.suggestions.length && typeof data.suggestions[0] === 'object'){
+          renderSuggestions(data.suggestions);
+        }
       } catch (err) {
         hideTyping();
         console.error(err);
-        showToast('Request failed. Check CORS, API URL, and network.');
+        // graceful error via fallback rendering
+        renderResponse({
+          answer: `Request failed.\n\n\`\`\`\n${(err && err.message) || err}\n\`\`\`\nPlease check CORS, API URL, and network.`,
+          source: 'fallback',
+          citations: [],
+          suggestions: [],
+          disclaimer: 'Educational information only — not financial advice'
+        });
       }
     }
 
@@ -223,14 +279,46 @@
           temperature: parseFloat(els.temperature.value)
         });
         hideTyping();
-        const answer = data.text || data.answer || JSON.stringify(data);
-        addMsg('assistant', `${escapeHtml(answer)}${renderCitations(data.citations)}`);
-        renderSuggestions(data.suggestions);
+        renderResponse(normalizePayload(data));
+        if (Array.isArray(data.suggestions) && data.suggestions.length && typeof data.suggestions[0] === 'object'){
+          renderSuggestions(data.suggestions);
+        }
       } catch (err){
         hideTyping();
         console.error(err);
-        showToast('Request failed. Check CORS, API URL, and network.');
+        renderResponse({
+          answer: `Request failed.\n\n\`\`\`\n${(err && err.message) || err}\n\`\`\`\nPlease check CORS, API URL, and network.`,
+          source: 'fallback',
+          citations: [],
+          suggestions: [],
+          disclaimer: 'Educational information only — not financial advice'
+        });
       }
+    }
+
+    // Normalize different backend shapes into your renderResponse contract
+    function normalizePayload(data){
+      // Expected by renderResponse:
+      // { answer: string, source: "corpus"|"fallback", citations?: [], suggestions?: [], disclaimer?: string }
+      if (data && typeof data === 'object'){
+        const answer = data.answer || data.text || JSON.stringify(data);
+        const source = data.source || (Array.isArray(data.citations) && data.citations.length ? 'corpus' : 'fallback');
+        return {
+          answer,
+          source,
+          citations: data.citations || [],
+          suggestions: data.suggestions || [],
+          disclaimer: data.disclaimer || undefined
+        };
+      }
+      // non-JSON response fallback
+      return {
+        answer: String(data ?? ''),
+        source: 'fallback',
+        citations: [],
+        suggestions: [],
+        disclaimer: 'Educational information only — not financial advice'
+      };
     }
 
     // Composer events
@@ -251,8 +339,9 @@
     // Pull fresh suggestions (from DEBUG=probe or any answer payload)
     els.refreshSuggestions.addEventListener('click', async ()=>{
       try {
-        const data = await httpPost({ prompt: '' }); // benign; backend will reply with suggestions anyway
-        renderSuggestions(data.suggestions);
+        const data = await httpPost({ prompt: '' }); // benign; backend may reply with suggestions
+        // preserve top-panel behavior if objects are returned
+        renderSuggestions(Array.isArray(data.suggestions) && typeof data.suggestions[0] === 'object' ? data.suggestions : []);
       } catch (e) {
         showToast('Could not refresh suggestions.');
       }

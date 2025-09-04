@@ -1,0 +1,116 @@
+--- a/index.html
++++ b/index.html
+@@
+-    function renderSuggestions(sugs){
+-      if(!Array.isArray(sugs) || sugs.length === 0) return;
+-      els.suggestions.innerHTML = '';
+-      sugs.forEach(s => {
+-        const btn = document.createElement('button');
+-        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+-        btn.dataset.faq = s.id;
+-        btn.textContent = s.title || s.id;
+-        els.suggestions.appendChild(btn);
+-      });
+-      // rebind handlers
+-      bindSuggestionButtons();
+-    }
++    function renderSuggestions(sugs){
++      if(!Array.isArray(sugs) || sugs.length === 0) return;
++      els.suggestions.innerHTML = '';
++      sugs.forEach(s => {
++        const {label, faqId} = normalizeSuggestion(s);
++        const btn = document.createElement('button');
++        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
++        if (faqId) btn.dataset.faq = faqId;
++        btn.textContent = label;
++        els.suggestions.appendChild(btn);
++      });
++      // rebind handlers
++      bindSuggestionButtons();
++    }
+@@
+-    function bindSuggestionButtons(){
+-      els.suggestions.querySelectorAll('button[data-faq]').forEach(btn => {
+-        btn.onclick = () => askFaq(btn.dataset.faq, btn.textContent.trim());
+-      });
+-    }
++    function bindSuggestionButtons(){
++      els.suggestions.querySelectorAll('button').forEach(btn => {
++        const faqId = btn.dataset.faq;
++        btn.onclick = () => {
++          if (faqId) {
++            askFaq(faqId, btn.textContent.trim());
++          } else {
++            addMsg('user', escapeHtml(btn.textContent.trim()));
++            sendPrompt(btn.textContent.trim());
++          }
++        };
++      });
++    }
+@@
+-      // follow-up chips (corpus only)
+-      if (source === 'corpus' && Array.isArray(suggestions) && suggestions.length){
++      // follow-up chips (corpus only) — handle strings OR objects
++      if (source === 'corpus' && Array.isArray(suggestions) && suggestions.length){
+         const chipsWrap = document.createElement('div');
+         chipsWrap.className = 'ms-11'; // indent to align under AI bubble (size-8 avatar + gap)
+         const chips = document.createElement('div');
+         chips.className = 'flex flex-wrap gap-2 mt-2';
+-        suggestions.forEach(s => {
+-          const btn = document.createElement('button');
+-          btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+-          btn.textContent = String(s);
+-          btn.onclick = () => {
+-            addMsg('user', escapeHtml(String(s)));
+-            sendPrompt(String(s));
+-          };
+-          chips.appendChild(btn);
+-        });
++        suggestions.forEach(s => {
++          const {label, faqId, prompt} = normalizeSuggestion(s);
++          const btn = document.createElement('button');
++          btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
++          btn.textContent = label;
++          btn.onclick = () => {
++            if (faqId) {
++              askFaq(faqId, label);
++            } else {
++              addMsg('user', escapeHtml(prompt));
++              sendPrompt(prompt);
++            }
++          };
++          chips.appendChild(btn);
++        });
+         chipsWrap.appendChild(chips);
+         els.messages.appendChild(chipsWrap);
+         els.messages.scrollTop = els.messages.scrollHeight;
+       }
+@@
+     function normalizePayload(data){
+       // Expected by renderResponse:
+@@
+       return {
+         answer: String(data ?? ''),
+         source: 'fallback',
+         citations: [],
+         suggestions: [],
+         disclaimer: 'Educational information only — not financial advice'
+       };
+     }
++
++    // --- NEW: normalize suggestions from strings or objects ---
++    // Accepts: "How do contributions work?"
++    //          { id:"faq.contributions", title:"How do contributions work?" }
++    //          { question:"How do contributions work?" } / { text: "..."} / { label:"..."} / { prompt:"..." }
++    function normalizeSuggestion(s){
++      if (s == null) return { label: 'Follow-up', prompt: 'Follow-up' };
++      if (typeof s === 'string') return { label: s, prompt: s };
++      if (typeof s === 'object') {
++        const faqId = typeof s.id === 'string' && s.id.startsWith('faq.') ? s.id : undefined;
++        const label = s.title || s.question || s.text || s.label || s.id || 'Follow-up';
++        const prompt = s.prompt || label;
++        return { label: String(label), prompt: String(prompt), faqId };
++      }
++      // fallback
++      return { label: String(s), prompt: String(s) };
++    }

@@ -153,36 +153,56 @@
 
     function escapeHtml(s){ return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+    // --- Citations: include clickable links when url present ---
     function renderCitations(cites){
       if(!cites || !Array.isArray(cites) || !els.showCitations.checked) return '';
       const items = cites.map((c,i)=>{
         if (c && typeof c === 'object') {
           const title = escapeHtml(c.title || c.id || `Source ${i+1}`);
           const key = escapeHtml(c.key || '');
-          return `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${title}${key ? ` <span class="text-slate-400">(${key})</span>`:''}</li>`;
+          const url = c.url ? String(c.url) : '';
+          const label = key ? `${title} <span class="text-slate-400">(${key})</span>` : title;
+          return url
+            ? `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> <a class="text-sky-700 hover:underline" href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a></li>`
+            : `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${label}</li>`;
         }
         return `<li class="leading-tight"><span class="text-slate-500">[${i+1}]</span> ${escapeHtml(String(c))}</li>`;
       }).join('');
       return `<div class="mt-2 text-xs text-slate-600"><div class="font-medium">Sources</div><ol class="list-decimal ms-4">${items}</ol></div>`;
     }
 
+    function dedupeSuggestions(arr){
+      if(!Array.isArray(arr)) return [];
+      const seen = new Set();
+      const out = [];
+      for (const s of arr){
+        const obj = (s && typeof s === 'object') ? s : { id:String(s), title:String(s) };
+        const sid = obj.faq_id || obj.id || obj.title || String(s);
+        if (!sid || seen.has(sid)) continue;
+        seen.add(sid);
+        out.push({ id: sid, title: obj.title || sid, faq_id: obj.faq_id || undefined });
+      }
+      return out;
+    }
+
     function renderSuggestions(sugs){
-      if(!Array.isArray(sugs) || sugs.length === 0) return;
+      const list = dedupeSuggestions(sugs);
+      if(list.length === 0) return;
       els.suggestions.innerHTML = '';
-      sugs.forEach(s => {
+      list.forEach(s => {
         const btn = document.createElement('button');
         btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
         btn.dataset.faq = s.id;
         btn.textContent = s.title || s.id;
         els.suggestions.appendChild(btn);
       });
-      // rebind handlers
       bindSuggestionButtons();
     }
 
+    // --- Quick Questions (top panel) → send ONLY { faq_id } ---
     function bindSuggestionButtons(){
       els.suggestions.querySelectorAll('button[data-faq]').forEach(btn => {
-        btn.onclick = () => askFaq(btn.dataset.faq, btn.textContent.trim());
+        btn.onclick = () => askFaq(btn.dataset.faq); // important: no prompt piggyback
       });
     }
     bindSuggestionButtons(); // initial static buttons
@@ -200,65 +220,68 @@
       return data;
     }
 
-    // ---- NEW: renderResponse integrates your corpus/fallback UI rules ----
+    // ---- Unified response renderer (corpus vs fallback) ----
     function renderResponse(payload){
-      // your updated signature
       const { answer, citations, suggestions, disclaimer, source } = payload;
 
-      // main body (Markdown → HTML; falls back to escaped text if marked missing)
       const html = (window.marked && typeof marked.parse === 'function')
         ? marked.parse(answer || '')
         : escapeHtml(answer || '').replace(/\n/g,'<br/>');
 
-      // append citations only for corpus answers and only if toggle is ON
       const withCitations = (source === 'corpus')
         ? `${html}${renderCitations(citations)}`
         : html;
 
-      // add the assistant bubble
       const row = addMsg('assistant', withCitations);
 
-      // follow-up chips (corpus only)
+      // Follow-up chips (corpus only) → send ONLY { faq_id }
       if (source === 'corpus' && Array.isArray(suggestions) && suggestions.length){
         const chipsWrap = document.createElement('div');
-        chipsWrap.className = 'ms-11'; // indent to align under AI bubble (size-8 avatar + gap)
+        chipsWrap.className = 'ms-11'; // indent under AI bubble
         const chips = document.createElement('div');
         chips.className = 'flex flex-wrap gap-2 mt-2';
-        suggestions.forEach(s => {
+
+        dedupeSuggestions(suggestions).forEach(obj => {
+          const sid = obj.faq_id || obj.id;
+          const label = obj.title || sid;
+
           const btn = document.createElement('button');
           btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
-          btn.textContent = String(s);
+          btn.type = 'button';
+          btn.dataset.faq = sid;
+          btn.textContent = label;
           btn.onclick = () => {
-            addMsg('user', escapeHtml(String(s)));
-            sendPrompt(String(s));
+            addMsg('user', escapeHtml(label));
+            askFaq(sid);
           };
           chips.appendChild(btn);
         });
+
         chipsWrap.appendChild(chips);
         els.messages.appendChild(chipsWrap);
         els.messages.scrollTop = els.messages.scrollHeight;
       }
 
-      // Disclaimer: already appended inside `answer` by backend for fallback/deflection.
-      // (Intentionally no separate disclaimer UI here.)
+      // Disclaimer handled by backend content when fallback/deflection
     }
 
-    async function askFaq(faqId, promptText=""){
-      addMsg('user', escapeHtml(promptText || '(selected question)'));
+    // --- Quick Question handler: ONLY { faq_id } ---
+    async function askFaq(faqId){
+      // Show a helpful label if the button exists; fallback to the id.
+      const btn = document.querySelector(`button[data-faq="${faqId}"]`);
+      const label = btn ? (btn.textContent || faqId) : faqId;
+      addMsg('user', escapeHtml(label));
       showTyping();
       try {
-        const data = await httpPost({ faq_id: faqId, ...(promptText ? { prompt: promptText } : {}) });
+        const data = await httpPost({ faq_id: faqId }); // IMPORTANT: only faq_id
         hideTyping();
-        // unified rendering path
         renderResponse(normalizePayload(data));
-        // keep the top suggestions panel behavior if your backend sends {suggestions:[{id,title},...]} for that area
         if (Array.isArray(data.suggestions) && data.suggestions.length && typeof data.suggestions[0] === 'object'){
           renderSuggestions(data.suggestions);
         }
       } catch (err) {
         hideTyping();
         console.error(err);
-        // graceful error via fallback rendering
         renderResponse({
           answer: `Request failed.\n\n\`\`\`\n${(err && err.message) || err}\n\`\`\`\nPlease check CORS, API URL, and network.`,
           source: 'fallback',
@@ -274,7 +297,6 @@
       try {
         const data = await httpPost({
           prompt: text,
-          // Optional knobs if you decide to read them in Lambda later:
           max_tokens: parseInt(els.maxTokens.value,10),
           temperature: parseFloat(els.temperature.value)
         });
@@ -296,9 +318,9 @@
       }
     }
 
-    // Normalize different backend shapes into your renderResponse contract
+    // Normalize different backend shapes into renderResponse contract
     function normalizePayload(data){
-      // Expected by renderResponse:
+      // Expected:
       // { answer: string, source: "corpus"|"fallback", citations?: [], suggestions?: [], disclaimer?: string }
       if (data && typeof data === 'object'){
         const answer = data.answer || data.text || JSON.stringify(data);
@@ -336,11 +358,10 @@
       addMsg('assistant', 'Chat cleared. Ask me anything about SMSFs (educational only).');
     });
 
-    // Pull fresh suggestions (from DEBUG=probe or any answer payload)
+    // Pull fresh suggestions
     els.refreshSuggestions.addEventListener('click', async ()=>{
       try {
         const data = await httpPost({ prompt: '' }); // benign; backend may reply with suggestions
-        // preserve top-panel behavior if objects are returned
         renderSuggestions(Array.isArray(data.suggestions) && typeof data.suggestions[0] === 'object' ? data.suggestions : []);
       } catch (e) {
         showToast('Could not refresh suggestions.');

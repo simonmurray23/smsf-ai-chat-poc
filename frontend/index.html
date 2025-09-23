@@ -185,27 +185,48 @@
       return out;
     }
 
-    function renderSuggestions(sugs){
-      const list = dedupeSuggestions(sugs);
-      if(list.length === 0) return;
-      els.suggestions.innerHTML = '';
-      list.forEach(s => {
+        function renderSuggestions(sugs){
+      const arr = Array.isArray(sugs) ? sugs : [];
+      // Unique by id (prefer .id, fallback .faq_id)
+      const seen = new Set();
+      const unique = [];
+      for (const s of arr){
+        const id = ((s && (s.id || s.faq_id)) || '').trim();
+        const title = (s && (s.title || s.text)) || id;
+        if (id && !seen.has(id)){
+          seen.add(id);
+          unique.push({ id, title });
+        }
+      }
+      // Controlled full re-render (idempotent)
+      const frag = document.createDocumentFragment();
+      for (const s of unique){
         const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
         btn.dataset.faq = s.id;
         btn.textContent = s.title || s.id;
-        els.suggestions.appendChild(btn);
-      });
+        frag.appendChild(btn);
+      }
+      els.suggestions.replaceChildren(frag);
+    });
       bindSuggestionButtons();
     }
 
     // --- Quick Questions (top panel) → send ONLY { faq_id } ---
-    function bindSuggestionButtons(){
-      els.suggestions.querySelectorAll('button[data-faq]').forEach(btn => {
-        btn.onclick = () => askFaq(btn.dataset.faq); // important: no prompt piggyback
-      });
+        function bindSuggestionButtons(){
+      // One-time delegated click listener on the suggestions container
+      if (!els.suggestions.dataset.delegate){
+        els.suggestions.addEventListener('click', (ev) => {
+          const btn = ev.target.closest('button[data-faq]');
+          if (!btn) return;
+          const id = btn.dataset.faq;
+          if (id) { askFaq(id); } // existing POST flow
+        });
+        els.suggestions.dataset.delegate = '1';
+      }
     }
-    bindSuggestionButtons(); // initial static buttons
+    bindSuggestionButtons(); // initial setup (delegation only)// initial static buttons
 
     async function httpPost(payload){
       const url = els.apiUrl.value.trim();

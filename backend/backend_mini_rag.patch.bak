@@ -1,6 +1,4 @@
-diff --git a/app.py b/app.py
---- a/app.py
-+++ b/app.py
+*** a/app.py
 --- b/app.py
 @@
 -import json

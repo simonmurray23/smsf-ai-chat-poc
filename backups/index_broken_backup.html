@@ -4,9 +4,43 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SMSF Edu Chat · Gov-by-Design Demo</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com">
+    (function attachSuggestionDelegationOnce(){
+      if (typeof els !== 'undefined' && els && els.suggestions && !els.suggestions.dataset.delegated){
+        els.suggestions.addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-faq]');
+          if (!btn) return;
+          const faqId = btn.dataset.faq || '';
+          if (faqId && typeof askFaq === 'function'){
+            askFaq(faqId);
+          } else {
+            console.warn('Suggestion click ignored (missing askFaq or faqId)', { faqId });
+          }
+        }, { passive: true });
+        els.suggestions.dataset.delegated = '1';
+      }
+    })();
+
+</script>
   <!-- Markdown renderer for renderResponse -->
-  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js">
+    (function attachSuggestionDelegationOnce(){
+      if (typeof els !== 'undefined' && els && els.suggestions && !els.suggestions.dataset.delegated){
+        els.suggestions.addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-faq]');
+          if (!btn) return;
+          const faqId = btn.dataset.faq || '';
+          if (faqId && typeof askFaq === 'function'){
+            askFaq(faqId);
+          } else {
+            console.warn('Suggestion click ignored (missing askFaq or faqId)', { faqId });
+          }
+        }, { passive: true });
+        els.suggestions.dataset.delegated = '1';
+      }
+    })();
+
+</script>
   <style>
     .typing span {display:inline-block;animation:blink 1.2s infinite;}
     .typing span:nth-child(2){animation-delay:.2s}
@@ -172,26 +206,27 @@
     }
 
     function renderSuggestions(sugs){
-      if(!Array.isArray(sugs) || sugs.length === 0) return;
-      els.suggestions.innerHTML = '';
-      sugs.forEach(s => {
-        const btn = document.createElement('button');
-        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
-        btn.dataset.faq = (s && typeof s === 'object') ? (s.id || s.faq_id || '') : String(s);
-        btn.textContent = (s && typeof s === 'object') ? (s.title || s.id || s.faq_id || '') : String(s);
-        els.suggestions.appendChild(btn);
-      });
+  if(!Array.isArray(sugs) || sugs.length === 0){
+    els.suggestions.replaceChildren(); // controlled clear
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const s of sugs){
+    const btn = document.createElement('button');
+    btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+    btn.type = 'button';
+    btn.dataset.faq = (s && typeof s === 'object') ? (s.id || s.faq_id || '') : String(s);
+    btn.textContent = (s && typeof s === 'object') ? (s.title || s.id || s.faq_id || '') : String(s);
+    frag.appendChild(btn);
+  }
+  els.suggestions.replaceChildren(frag);
+});
       // rebind handlers
-      bindSuggestionButtons();
     }
 
     // --- Quick Questions (top panel) → send ONLY { faq_id } ---
-    function bindSuggestionButtons(){
-      els.suggestions.querySelectorAll('button[data-faq]').forEach(btn => {
-        btn.onclick = () => askFaq(btn.dataset.faq); // important: no prompt piggyback
-      });
+);
     }
-    bindSuggestionButtons(); // initial static buttons
 
     async function httpPost(payload){
       const url = els.apiUrl.value.trim();
@@ -354,6 +389,23 @@
         showToast('Could not refresh suggestions.');
       }
     });
-  </script>
+  
+    (function attachSuggestionDelegationOnce(){
+      if (typeof els !== 'undefined' && els && els.suggestions && !els.suggestions.dataset.delegated){
+        els.suggestions.addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-faq]');
+          if (!btn) return;
+          const faqId = btn.dataset.faq || '';
+          if (faqId && typeof askFaq === 'function'){
+            askFaq(faqId);
+          } else {
+            console.warn('Suggestion click ignored (missing askFaq or faqId)', { faqId });
+          }
+        }, { passive: true });
+        els.suggestions.dataset.delegated = '1';
+      }
+    })();
+
+</script>
 </body>
 </html>

@@ -1,0 +1,69 @@
+diff --git a/frontend/index.html b/frontend/index.html
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@
+-    function renderSuggestions(sugs){
+-      if(!Array.isArray(sugs) || sugs.length === 0) return;
+-      els.suggestions.innerHTML = '';
+-      sugs.forEach(s => {
+-        const btn = document.createElement('button');
+-        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
+-        btn.dataset.faq = (s && typeof s === 'object') ? (s.id || s.faq_id || '') : String(s);
+-        btn.textContent = (s && typeof s === 'object') ? (s.title || s.id || s.faq_id || '') : String(s);
+-        els.suggestions.appendChild(btn);
+-      });
+-      // rebind handlers
+-      bindSuggestionButtons();
+-    }
++    function renderSuggestions(sugs){
++      if(!Array.isArray(sugs) || sugs.length === 0){
++        els.suggestions.replaceChildren(); // controlled clear
++        return;
++      }
++      const frag = document.createDocumentFragment();
++      for (const s of sugs){
++        const btn = document.createElement('button');
++        btn.className = 'px-3 py-1 rounded-full text-sm border border-slate-300 hover:bg-slate-50';
++        btn.type = 'button';
++        btn.dataset.faq = (s && typeof s === 'object') ? (s.id || s.faq_id || '') : String(s);
++        btn.textContent = (s && typeof s === 'object') ? (s.title || s.id || s.faq_id || '') : String(s);
++        frag.appendChild(btn);
++      }
++      // one-shot replace prevents duplicate nodes/handlers
++      els.suggestions.replaceChildren(frag);
++    }
+@@
+-      bindSuggestionButtons();
++      // (removed) no direct rebind; delegation handles all clicks
+@@
+-    function bindSuggestionButtons(){
+-      els.suggestions.querySelectorAll('button').forEach(btn => {
+-        btn.onclick = () => askFaq(btn.dataset.faq); // important: no prompt piggyback
+-      });
+-    }
++    // Attach a single delegated click listener once
++    (function attachSuggestionDelegationOnce(){
++      if (els && els.suggestions && !els.suggestions.dataset.delegated){
++        els.suggestions.addEventListener('click', (e) => {
++          const btn = e.target.closest('button[data-faq]');
++          if (!btn) return;
++          const faqId = btn.dataset.faq || '';
++          if (faqId && typeof askFaq === 'function'){
++            askFaq(faqId);
++          } else {
++            console.warn('Suggestion click ignored (missing askFaq or faqId)', { faqId });
++          }
++        }, { passive: true });
++        els.suggestions.dataset.delegated = '1';
++      }
++    })();
+@@
+-    bindSuggestionButtons(); // initial static buttons
++    // (removed) initial bind — delegation covers static + dynamic
+@@
+-          btn.onclick = () => {
++          // (removed) per-button onclick; delegation will handle:
++          // btn.onclick = () => {
+             /* existing code may follow */
+-          };
++          // };

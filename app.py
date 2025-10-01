@@ -1,9 +1,11 @@
 # app.py  (Python 3.13, AWS Lambda)
 # Demo-safe, free-tier-friendly, educational-only SMSF chat backend
+# Mini-RAG v1 integrated: S3 rag/chunks.json, Jaccard overlap, top-k context → Titan Text Lite
 
 import os
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 import boto3
@@ -19,6 +21,11 @@ CORPUS_BUCKET = (os.getenv("CORPUS_BUCKET") or os.getenv("S3_BUCKET") or "").str
 FAQ_PREFIX    = os.getenv("S3_FAQ_PREFIX", "faq/").strip()
 INDEX_KEY     = (os.getenv("INDEX_KEY") or os.getenv("FAQ_INDEX_KEY") or f"{FAQ_PREFIX}index.json").strip()
 
+# RAG
+RAG_PREFIX    = os.getenv("RAG_PREFIX", "rag/").strip() or "rag/"
+RAG_INDEX_KEY = (os.getenv("RAG_INDEX_KEY") or f"{RAG_PREFIX}chunks.json").strip()
+RAG_TOP_K     = int(os.getenv("RAG_TOP_K", "3"))
+
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", os.getenv("MODEL_ID", "amazon.titan-text-lite-v1"))
 AWS_REGION       = os.getenv("BEDROCK_REGION", os.getenv("AWS_REGION", "ap-southeast-2"))
 
@@ -29,13 +36,12 @@ DISCLAIMER = "Educational information only — not financial advice."
 # ---------- AWS Clients ----------
 s3 = boto3.client("s3")
 # Lazy init for Bedrock so we don't require it on corpus path
-_bedrock = None
-
+_bedrock_client = None
 def _bedrock():
-    global _bedrock
-    if _bedrock is None:
-        _bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-    return _bedrock
+    global _bedrock_client
+    if _bedrock_client is None:
+        _bedrock_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+    return _bedrock_client
 
 # ---------- CORS / HTTP helpers ----------
 def _cors_headers() -> Dict[str, str]:
@@ -171,6 +177,92 @@ def _build_suggestions(ids: List[str], current_id: str) -> List[Dict[str, str]]:
         seen.add(sid)
     return out
 
+# ---------- RAG helpers (Mini-RAG v1) ----------
+_RAG_CHUNKS: Optional[List[Dict[str, Any]]] = None
+
+def _load_rag_chunks() -> List[Dict[str, Any]]:
+    """Load & cache s3://<bucket>/<RAG_INDEX_KEY> which is a list of {file,key,title,text,tokens}."""
+    global _RAG_CHUNKS
+    if _RAG_CHUNKS is not None:
+        return _RAG_CHUNKS
+    try:
+        raw = _s3_read_text(RAG_INDEX_KEY)
+        data = json.loads(raw)
+        chunks: List[Dict[str, Any]] = []
+        if isinstance(data, list):
+            for c in data:
+                if not isinstance(c, dict):
+                    continue
+                file = c.get("file") or ""
+                key  = c.get("key") or (f"{RAG_PREFIX}{file}" if file else "")
+                title = c.get("title") or (file or key or "RAG")
+                text  = c.get("text") or ""
+                tokens = c.get("tokens") or 0
+                chunks.append({"file": file, "key": key, "title": title, "text": str(text), "tokens": tokens})
+        _RAG_CHUNKS = chunks
+        logger.info("RAG chunks loaded: %d", len(_RAG_CHUNKS))
+        return _RAG_CHUNKS
+    except Exception as e:
+        logger.warning("Failed to load RAG index (%s): %s", RAG_INDEX_KEY, e)
+        _RAG_CHUNKS = []
+        return _RAG_CHUNKS
+
+_token_rx = re.compile(r"[a-z0-9]+", re.I)
+
+def _token_set(text: str) -> set:
+    return set(_token_rx.findall((text or "").lower()))
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    inter = a & b
+    if not inter:
+        return 0.0
+    union = a | b
+    return len(inter) / len(union)
+
+def _select_top_chunks(prompt: str, chunks: List[Dict[str, Any]], k: int) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    q = _token_set(prompt)
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+    for c in chunks:
+        s = _jaccard(q, _token_set(c.get("text", "")))
+        if s > 0:
+            scored.append((s, c))
+    if not scored:
+        return [], None
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = [c for _, c in scored[: max(1, k)]]
+    return top, top[0] if top else None
+
+def _truncate(s: str, n: int) -> str:
+    s = s or ""
+    if len(s) <= n:
+        return s
+    return s[: max(0, n-3)] + "..."
+
+def _build_context_block(top_chunks: List[Dict[str, Any]]) -> str:
+    # Keep context concise to fit Titan Lite comfortably
+    parts = []
+    for i, c in enumerate(top_chunks, 1):
+        title = c.get("title") or f"Chunk {i}"
+        text  = _truncate(c.get("text", ""), 2600)  # conservative cap
+        parts.append(f"### {title}\n{text}")
+    return "\n\n".join(parts)
+
+def _compose_prompt(user_prompt: str, context_block: str) -> str:
+    ctx = ""
+    if context_block:
+        ctx = (
+            "Use the following context to answer. If the answer is not in the context, respond generally without "
+            "giving personal advice.\n\n" + context_block + "\n\n"
+        )
+    return (
+        "You are an educational assistant for SMSF (Self-Managed Super Funds) topics in Australia.\n"
+        "Answer concisely in plain English. Use bullet points where it helps. Do NOT provide financial advice.\n\n"
+        f"{ctx}"
+        f"User question:\n{user_prompt}\n"
+    )
+
 # ---------- Bedrock (fallback path only) ----------
 def _titan_generate(prompt: str, temperature: float = 0.2, max_tokens: int = 512) -> str:
     """Minimal Titan Text Lite call; return plain string. Graceful on errors."""
@@ -253,6 +345,7 @@ def handler(event, context):
                 ))
             except (ClientError, BotoCoreError) as e:
                 # S3 read failures → fallback contract
+                logger.warning("FAQ load failed: %s", e)
                 return _http(200, _contract(
                     source="fallback",
                     answer=f"Failed to load snippet for **{faq_id}**.",
@@ -262,12 +355,32 @@ def handler(event, context):
 
         # ---------- Free-prompt path (no faq_id) ----------
         if prompt:
-            text = _titan_generate(prompt, float(body.get("temperature", 0.2)), int(body.get("max_tokens", 512)))
+            # Mini-RAG v1
+            chunks = _load_rag_chunks()
+            top_chunks, top_chunk = _select_top_chunks(prompt, chunks, RAG_TOP_K)
+            context_block = _build_context_block(top_chunks) if top_chunks else ""
+            titan_prompt = _compose_prompt(prompt, context_block)
+
+            text = _titan_generate(
+                titan_prompt,
+                float(body.get("temperature", 0.2)),
+                int(body.get("max_tokens", 512))
+            )
+
+            # Only the top chunk cited
+            citations: List[Dict[str, str]] = []
+            if top_chunk and top_chunk.get("key"):
+                citations.append({
+                    "title": top_chunk.get("title", "RAG context"),
+                    "key": top_chunk["key"],
+                    "url": f"s3://{CORPUS_BUCKET}/{top_chunk['key']}"
+                })
+
             return _http(200, _contract(
-                source="fallback",
+                source="fallback",   # per acceptance criteria
                 answer=text,
-                citations=[],
-                suggestions=[],  # keep minimal moving parts
+                citations=citations,
+                suggestions=[],      # keep minimal moving parts
             ))
 
         # ---------- Neither present ----------
@@ -286,6 +399,7 @@ def handler(event, context):
             citations=[],
             suggestions=[],
         ))
+
 # --- entrypoint shim (lets old 'app.lambda_handler' keep working) ---
 def lambda_handler(event, context):  # keep legacy handler name alive
     return handler(event, context)

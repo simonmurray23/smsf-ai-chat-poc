@@ -1,0 +1,47 @@
+# --- editors & OS ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# --- node/frontend ---
+node_modules/
+dist/
+build/
+*.map
+
+# --- tests/coverage ---
+.pytest_cache/
+coverage/
+*.coverage
+
+# --- local config & generated data ---
+env.json
+
+corpus_local/**
+rag/**
+!rag/.gitkeep
+!rag/README.md
+
+# --- local patch helpers ---
+patches/
+
+# --- archives & binaries ---
+*.zip
+*.tar
+*.gz
+*.7z
+
+# --- logs ---
+*.log
+
+# --- misc OS cruft ---
+Thumbs.db

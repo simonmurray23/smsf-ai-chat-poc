@@ -11,6 +11,11 @@ from typing import Dict, Any, List, Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
 
+from retrieval.router import route_sections, explain_routing
+from retrieval.search_bm25 import load_bm25_index, bm25_search
+from retrieval.re_rank import re_rank_with_embeddings
+from retrieval.oracle import assess_coverage, compose_prompt, render_refusal
+
 # ---------- Logging ----------
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -20,6 +25,13 @@ logger.setLevel(logging.INFO)
 CORPUS_BUCKET = (os.getenv("CORPUS_BUCKET") or os.getenv("S3_BUCKET") or "").strip()
 FAQ_PREFIX    = os.getenv("S3_FAQ_PREFIX", "faq/").strip()
 INDEX_KEY     = (os.getenv("INDEX_KEY") or os.getenv("FAQ_INDEX_KEY") or f"{FAQ_PREFIX}index.json").strip()
+
+# ---------- RAG v2 Config ----------
+RAG_PIPELINE = os.getenv("RAG_PIPELINE", "baseline")  # baseline | rerank | auto
+BM25_MANIFEST_KEY = os.getenv("BM25_MANIFEST_KEY", "rag/v2/bm25/current.manifest.json")
+RERANK_MAX_EMBED = int(os.getenv("RERANK_MAX_EMBED", "30"))
+RERANK_BUDGET_MS = int(os.getenv("RERANK_BUDGET_MS", "1500"))
+RAG_TOP_N = int(os.getenv("RAG_TOP_N", "8"))
 
 # RAG
 RAG_PREFIX    = os.getenv("RAG_PREFIX", "rag/").strip() or "rag/"
@@ -355,33 +367,130 @@ def handler(event, context):
 
         # ---------- Free-prompt path (no faq_id) ----------
         if prompt:
-            # Mini-RAG v1
-            chunks = _load_rag_chunks()
-            top_chunks, top_chunk = _select_top_chunks(prompt, chunks, RAG_TOP_K)
-            context_block = _build_context_block(top_chunks) if top_chunks else ""
-            titan_prompt = _compose_prompt(prompt, context_block)
+            try:
+                # --- RAG v2 baseline: Router → BM25 ---
+                sections, routing_why = explain_routing(prompt)
+                logger.info("router.sections=%s why=%s", sections, routing_why)
 
-            text = _titan_generate(
-                titan_prompt,
-                float(body.get("temperature", 0.2)),
-                int(body.get("max_tokens", 512))
-            )
+                # Load/refresh BM25 index from S3 (ETag/TTL handled inside)
+                load_bm25_index(_s3_client, CORPUS_BUCKET, BM25_MANIFEST_KEY)
 
-            # Only the top chunk cited
-            citations: List[Dict[str, str]] = []
-            if top_chunk and top_chunk.get("key"):
-                citations.append({
-                    "title": top_chunk.get("title", "RAG context"),
-                    "key": top_chunk["key"],
-                    "url": f"s3://{CORPUS_BUCKET}/{top_chunk['key']}"
-                })
+                # Retrieve lexical candidates
+                candidates = bm25_search(prompt, sections, top_k=50)
 
-            return _http(200, _contract(
-                source="fallback",   # per acceptance criteria
-                answer=text,
-                citations=citations,
-                suggestions=[],      # keep minimal moving parts
-            ))
+                # If nothing came back, fall through to v1
+                if not candidates:
+                    raise RuntimeError("bm25_empty")
+
+                # --- Optional embeddings re-rank (learning step) ---
+                use_rerank = RAG_PIPELINE in ("rerank", "auto")
+                if use_rerank:
+                    try:
+                        hits = re_rank_with_embeddings(
+                            prompt,
+                            candidates,
+                            top_n=RAG_TOP_N,
+                            max_embed=RERANK_MAX_EMBED,
+                            budget_ms=RERANK_BUDGET_MS,
+                        )
+                    except Exception as e:
+                        logger.warning("re_rank failed, using BM25 only: %s", e)
+                        hits = candidates[:RAG_TOP_N]
+                else:
+                    hits = candidates[:RAG_TOP_N]
+
+                # --- Oracle: check coverage from snippets-only ---
+                snippets = []
+                for h in hits:
+                    # Expect BM25 docs to include S3 'key' for citation; if your builder
+                    # doesn’t yet include it, add it to docs.jsonl.gz records.
+                    snippets.append({
+                        "id": h.id,
+                        "section": h.section,
+                        "title": h.title,
+                        "text": h.text,
+                        "citations": h.citations,
+                        "key": getattr(h, "key", None),  # safe if absent
+                    })
+
+                ok, why = assess_coverage([s["text"] for s in snippets], min_chars=600, min_sources=2)
+                logger.info("oracle.coverage ok=%s why=%s", ok, why)
+
+                if not ok:
+                    refusal = render_refusal(
+                        prompt,
+                        suggestions=[
+                            "Narrow the question (e.g., specify the fee or rule).",
+                            "Ask about one step (setup/fees/trustees/compliance).",
+                        ],
+                    )
+                    return _http(200, _contract(
+                        source="fallback",
+                        answer=refusal["message"],
+                        citations=[],
+                        suggestions=refusal["suggestions"],
+                    ))
+
+                # --- Compose strict snippets-only prompt for Titan ---
+                titan_prompt = compose_prompt(prompt, snippets)
+
+                text = _titan_generate(
+                    titan_prompt,
+                    float(body.get("temperature", 0.2)),
+                    int(body.get("max_tokens", 512))
+                )
+
+                # Build citations (top 3 unique sources)
+                citations: List[Dict[str, str]] = []
+                seen = set()
+                for s in snippets[:3]:
+                    key = s.get("key")
+                    title = s.get("title") or s.get("id")
+                    if title in seen:
+                        continue
+                    seen.add(title)
+                    citations.append({
+                        "title": title,
+                        "key": key or "",
+                        "url": f"s3://{CORPUS_BUCKET}/{key}" if key else ""
+                    })
+
+                return _http(200, _contract(
+                    source="corpus",           # snippets-only answer path
+                    answer=text,
+                    citations=citations,
+                    suggestions=[],            # keep your existing suggestions hook if needed
+                ))
+
+            except Exception as e:
+                # Any failure in v2 path → fall back to your existing Mini-RAG v1
+                logger.warning("RAG v2 pipeline failed, falling back to v1: %s", e)
+
+                chunks = _load_rag_chunks()
+                top_chunks, top_chunk = _select_top_chunks(prompt, chunks, RAG_TOP_K)
+                context_block = _build_context_block(top_chunks) if top_chunks else ""
+                titan_prompt = _compose_prompt(prompt, context_block)
+
+                text = _titan_generate(
+                    titan_prompt,
+                    float(body.get("temperature", 0.2)),
+                    int(body.get("max_tokens", 512))
+                )
+
+                citations: List[Dict[str, str]] = []
+                if top_chunk and top_chunk.get("key"):
+                    citations.append({
+                        "title": top_chunk.get("title", "RAG context"),
+                        "key": top_chunk["key"],
+                        "url": f"s3://{CORPUS_BUCKET}/{top_chunk['key']}"
+                    })
+
+                return _http(200, _contract(
+                    source="fallback",  # keep as per your current acceptance criteria
+                    answer=text,
+                    citations=citations,
+                    suggestions=[],
+                ))
 
         # ---------- Neither present ----------
         return _http(400, _contract(

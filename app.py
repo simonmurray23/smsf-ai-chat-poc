@@ -1,7 +1,7 @@
 # app.py  (Python 3.13, AWS Lambda)
 # Demo-safe, free-tier-friendly, educational-only SMSF chat backend
 # Mini-RAG v1 integrated: S3 rag/chunks.json, Jaccard overlap, top-k context → Titan Text Lite
-# This comment added to support simulating a Pull Request
+# This comment added to support simulating a Pull Request for learning purposes
 
 import os
 import json

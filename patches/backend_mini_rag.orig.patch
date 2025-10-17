@@ -1,0 +1,186 @@
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+--- b/app.py
+@@
+-import json
+-import os
+-import boto3
+-import botocore
+-import re
+-from datetime import datetime
++import json
++import os
++import boto3
++import botocore
++import re
++import string
++from datetime import datetime
++from functools import lru_cache
+@@
+-S3 = boto3.client('s3')
++S3 = boto3.client('s3')
+ BEDROCK_MODEL_ID = os.getenv('BEDROCK_MODEL_ID', 'amazon.titan-text-lite-v1')
+ CORPUS_BUCKET = os.environ['CORPUS_BUCKET']
+ INDEX_KEY = os.environ['INDEX_KEY']  # e.g., faq/index.json
++RAG_INDEX_KEY = os.getenv('RAG_INDEX_KEY')  # e.g., rag/chunks.json (optional)
+ ALLOWED_ORIGIN = os.getenv('ALLOWED_ORIGIN', '*')
+@@
+ # Load and cache FAQ index for cold start
+ _FAQ_INDEX = None
+ def load_faq_index():
+     global _FAQ_INDEX
+     if _FAQ_INDEX is None:
+         obj = S3.get_object(Bucket=CORPUS_BUCKET, Key=INDEX_KEY)
+         _FAQ_INDEX = json.loads(obj['Body'].read().decode('utf-8'))
+     return _FAQ_INDEX
++
++# ---------------- Mini-RAG v1 (optional) ----------------
++_RAG_INDEX = None  # cached list of chunks
++_STOPWORDS = set("""
++the a an and or of to for in on at with from by is are was were be been being this that those these it its as into such not no can may might should would will
++about after again against all also any because before between both but during each few further had has have having he her here him his how i if into itself just
++more most other our out over same she so some than their them then there they under until up very what when where which who why you your
++smsf fund funds super superannuation trustee trustees ato audit auditing audits
++""".split())
++
++def _tokenize(text):
++    # lowercase, remove punctuation, split on whitespace
++    if not text:
++        return set()
++    text = text.lower().translate(str.maketrans('', '', string.punctuation))
++    return {w for w in text.split() if w and w not in _STOPWORDS}
++
++def load_rag_index():
++    """Load rag/chunks.json from S3 (if RAG_INDEX_KEY set). Cache per cold start."""
++    global _RAG_INDEX
++    if not RAG_INDEX_KEY:
++        return None
++    if _RAG_INDEX is None:
++        try:
++            obj = S3.get_object(Bucket=CORPUS_BUCKET, Key=RAG_INDEX_KEY)
++            data = json.loads(obj['Body'].read().decode('utf-8'))
++            # Ensure tokens exist; if not, derive from text
++            for ch in data:
++                if 'tokens' in ch and isinstance(ch['tokens'], list):
++                    ch['_tokset'] = set(ch['tokens'])
++                else:
++                    ch['_tokset'] = _tokenize(ch.get('text',''))
++            _RAG_INDEX = data
++        except botocore.exceptions.ClientError as e:
++            # If the index isn't present, operate without RAG
++            _RAG_INDEX = None
++    return _RAG_INDEX
++
++def _score_jaccard(q_tokens, chunk_tokset):
++    if not q_tokens or not chunk_tokset:
++        return 0.0
++    inter = len(q_tokens & chunk_tokset)
++    if inter == 0:
++        return 0.0
++    union = len(q_tokens | chunk_tokset)
++    return inter / union
++
++def retrieve_context(query, top_k=3):
++    """Return (context_text, top_chunks_for_citations) or ('', [])."""
++    index = load_rag_index()
++    if not index:
++        return "", []
++    q_tokens = _tokenize(query)
++    scored = []
++    for ch in index:
++        score = _score_jaccard(q_tokens, ch.get('_tokset', set()))
++        if score > 0.0:
++            scored.append((score, ch))
++    if not scored:
++        return "", []
++    scored.sort(key=lambda x: x[0], reverse=True)
++    top = [c for _, c in scored[:top_k]]
++    # Build short context block
++    ctx_parts = []
++    for c in top:
++        title = c.get('title') or c.get('id','')
++        ctx_parts.append(f"[{title}]\n{c.get('text','')}".strip())
++    context_text = "\n\n---\n\n".join(ctx_parts)
++    return context_text, top
+@@
+ def lambda_handler(event, context):
+     # CORS preflight
+     if event.get("httpMethod") == "OPTIONS":
+         return {
+             "statusCode": 204,
+             "headers": {
+                 "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+                 "Access-Control-Allow-Methods": "POST,OPTIONS",
+                 "Access-Control-Allow-Headers": "Content-Type",
+             },
+             "body": ""
+         }
+@@
+-    body = json.loads(event.get("body") or "{}")
++    body = json.loads(event.get("body") or "{}")
+     faq_id = body.get("faq_id")
+     prompt = body.get("prompt")
+@@
+-    # STRICT short-circuit for faq_id → serve from corpus index; NEVER call LLM
++    # STRICT short-circuit for faq_id → serve from corpus index; NEVER call LLM
+     if faq_id:
+         index = load_faq_index()
+         item = next((x for x in index if x.get("id") == faq_id), None)
+         if not item:
+             return _response(404, {"error":"FAQ not found"})
+         # Load body snippet
+         key = item.get("key")
+         obj = S3.get_object(Bucket=CORPUS_BUCKET, Key=key)
+         raw = obj['Body'].read().decode('utf-8')
+         # strip YAML front-matter if present
+         body_text = re.sub(r'^---[\\s\\S]*?---\\s*', '', raw, count=1, flags=re.M)
+         payload = {
+             "source": "corpus",
+             "answer": body_text.strip(),
+             "citations": [{
+                 "title": item.get("title",""),
+                 "key": key,
+                 "url": item.get("url","")
+             }],
+             "suggestions": item.get("suggestions", []),
+             "disclaimer": "Educational information only — not financial advice."
+         }
+         return _response(200, payload)
+@@
+-    # Free-prompt path → call Bedrock and wrap to contract with source:"fallback"
+-    if isinstance(prompt, str) and prompt.strip():
+-        answer = call_bedrock(prompt.strip())
++    # Free-prompt path → (optional) Mini-RAG v1 then Bedrock; still source:"fallback"
++    if isinstance(prompt, str) and prompt.strip():
++        q = prompt.strip()
++        context_text, top = retrieve_context(q)
++        bedrock_input = q
++        citations = []
++        if context_text:
++            # Prepend a compact, clearly demarcated context block
++            bedrock_input = (
++                "Use the following context to explain in plain English. Do not give financial advice.\n\n"
++                f"{context_text}\n\n"
++                f"Question: {q}"
++            )
++            # Surface the top chunk as a non-FAQ citation
++            top0 = top[0]
++            citations = [{
++                "title": top0.get("title",""),
++                "key": f"rag/{top0.get('id','')}",
++                "url": top0.get("url","")
++            }]
++        answer = call_bedrock(bedrock_input)
+         payload = {
+             "source": "fallback",
+             "answer": answer,
+-            "citations": [],
++            "citations": citations,
+             "suggestions": [],
+             "disclaimer": "Educational information only — not financial advice."
+         }
+         return _response(200, payload)
+@@
+     # Default: bad request
+     return _response(400, {"error":"Invalid request"})

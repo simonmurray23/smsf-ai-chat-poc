@@ -1,0 +1,16 @@
+[
+  {
+    "file": "smsf_investment_strategy_basics.md",
+    "key": "rag/smsf_investment_strategy_basics.md",
+    "title": "SMSF Investment Strategy: What it must cover",
+    "text": "# SMSF Investment Strategy: What it must cover\n\nYour SMSF must have a **written investment strategy** tailored to the fund’s circumstances and reviewed regularly.\n\n## Minimum elements to address\n- **Risk & return**: The level of risk you’re willing to accept and expected returns.\n- **Diversification**: Whether investments are spread across asset classes (and reasons if not).\n- **Liquidity**: Ability to pay expenses and benefits when due (e.g., pensions).\n- **Liabilities**: Any borrowings and their impact on risk.\n- **Insurance needs**: Consideration of whether to hold insurance for members.\n\n## Review and evidence\n- Review the strategy at least annually, or when circumstances change (e.g., starting a pension, member joining/leaving).\n- Keep minutes/notes of reviews and rationale for decisions.\n\n## Common pitfalls\n- Strategy too generic (not tailored to your fund).\n- No evidence of review.\n- Asset allocation bands missing or very broad without explanation.\n- Ignoring liquidity where pensions or large expenses exist.\n\nA clear, tailored strategy plus review notes help demonstrate compliance and good governance.\n\n*Educational information only — not financial advice.*\n",
+    "tokens": 164
+  },
+  {
+    "file": "smsf_trustees_vs_members.md",
+    "key": "rag/smsf_trustees_vs_members.md",
+    "title": "SMSF: Trustees vs Members (plain-English overview)",
+    "text": "# SMSF: Trustees vs Members (plain-English overview)\n\n**Members** are the people whose retirement savings are in the fund.  \n**Trustees** are the people legally responsible for running the fund.\n\nIn an SMSF, every member must be a trustee (or a director of the corporate trustee), and every trustee must be a member—subject to limited exceptions (e.g., minors, enduring power of attorney).\n\n## Structures\n- **Individual trustees**: Each member is a trustee. If a member joins/leaves, you must add/remove trustees and update ownership of assets (more admin).\n- **Corporate trustee**: A company acts as trustee; each member is a director. Changes in membership usually mean director changes only (often less admin).\n\n## Core trustee responsibilities\n- Act in the best financial interests of members.\n- Keep the fund **solely** for providing retirement benefits (sole-purpose test).\n- Maintain an **investment strategy** appropriate to members’ circumstances (review regularly).\n- Keep records, prepare accounts, lodge the SMSF annual return, arrange audits, and pay the supervisory levy.\n- Ensure contributions, borrowings, and payments comply with the rules (e.g., contribution caps, conditions of release).\n\n## Who can be a member?\nGenerally up to six members. Members must be individuals (not other funds), typically Australian residents for tax residency of the fund.\n\n## Why it matters\nTrustee obligations are legal duties. Breaches can trigger penalties and tax consequences. Many SMSFs choose a corporate trustee for continuity and simpler admin when membership changes.\n\n*Educational information only — not financial advice.*\n",
+    "tokens": 235
+  }
+]

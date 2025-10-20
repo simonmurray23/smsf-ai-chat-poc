@@ -304,11 +304,20 @@ def _json(status, body):
         "body": json.dumps(body)
     }
 
-def handler(event, context):
+def _get_path_and_method(event):
+    # Works for both REST API (v1) and HTTP API (v2) proxy payloads
     path = (event.get("rawPath") or event.get("path") or "").rstrip("/")
-    method = (event.get("requestContext", {}).get("http", {}).get("method")
-              or event.get("httpMethod") or "GET").upper()
+    method = (
+        event.get("requestContext", {}).get("http", {}).get("method")
+        or event.get("httpMethod")
+        or "GET"
+    ).upper()
+    return path, method
 
+def handler(event, context):
+    path, method = _get_path_and_method(event)
+
+    # --- Health check: fast, no Bedrock calls ---
     if path.endswith("/health") and method == "GET":
         return _json(200, {
             "status": "ok",

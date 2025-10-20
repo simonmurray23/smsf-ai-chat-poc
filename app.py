@@ -5,6 +5,7 @@
 
 import os
 import json
+import time
 import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
@@ -293,6 +294,29 @@ def _titan_generate(prompt: str, temperature: float = 0.2, max_tokens: int = 512
         return "General educational overview unavailable right now. Please try again later."
 
 # ---------- Lambda Handler ----------
+def _json(status, body):
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
+        },
+        "body": json.dumps(body)
+    }
+
+def handler(event, context):
+    path = (event.get("rawPath") or event.get("path") or "").rstrip("/")
+    method = (event.get("requestContext", {}).get("http", {}).get("method")
+              or event.get("httpMethod") or "GET").upper()
+
+    if path.endswith("/health") and method == "GET":
+        return _json(200, {
+            "status": "ok",
+            "ts": int(time.time()),
+            "stage": os.getenv("STAGE", "prod"),
+            "version": os.getenv("COMMIT_SHA", "local")
+        })
+
 def handler(event, context):
     # CORS preflight
     if (event.get("httpMethod") or "").upper() == "OPTIONS":
